@@ -1,0 +1,40 @@
+{
+    "styles": [
+        {
+            "id": "lofi_chill",
+            "name": "Lo-fi Chill",
+            "prompt_template": "Create a lo-fi chill remix of [SONG_NAME]. Keep the melody but make it relaxing, 80 BPM, with ambient vibes.",
+            "parameters": {
+                "duration": "180s",
+                "model": "chirp-v3"
+            }
+        },
+        {
+            "id": "edm_remix",
+            "name": "EDM Remix",
+            "prompt_template": "Remix [SONG_NAME] as an upbeat EDM track. Energy level 8/10, 120 BPM, heavy bass drops.",
+            "parameters": {
+                "duration": "180s",
+                "model": "chirp-v3"
+            }
+        },
+        {
+            "id": "jazz_cover",
+            "name": "Jazz Cover",
+            "prompt_template": "Create a smooth jazz interpretation of [SONG_NAME]. Soft instruments, 100 BPM, elegant arrangement.",
+            "parameters": {
+                "duration": "180s",
+                "model": "chirp-v3"
+            }
+        },
+        {
+            "id": "acoustic_stripped",
+            "name": "Acoustic Stripped",
+            "prompt_template": "Cover [SONG_NAME] with acoustic guitar and minimal production. Keep vocals minimal or instrumental.",
+            "parameters": {
+                "duration": "180s",
+                "model": "chirp-v3"
+            }
+        }
+    ]
+}

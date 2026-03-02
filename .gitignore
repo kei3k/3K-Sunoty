@@ -1,0 +1,24 @@
+# Secrets & Tokens
+.env
+*.pickle
+client_secrets.json
+client_secret_2.json
+client_secret_3.json
+credentials/
+
+# Local Data & Profiles
+chrome_profile/
+selenium_data/
+logs/
+downloads/
+input/
+output/
+__pycache__/
+*.bak
+*.log
+results.json
+batch_results.json
+songs_to_generate.json
+
+# IDE
+.vscode/

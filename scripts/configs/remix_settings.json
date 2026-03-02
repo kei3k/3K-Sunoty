@@ -1,0 +1,21 @@
+{
+    "default_style": "lofi_chill",
+    "channels": {
+        "UCxxxxxx1": {
+            "style": "lofi_chill",
+            "preferred_tempo": 1.02,
+            "preferred_pitch": 0.5
+        },
+        "UCxxxxxx2": {
+            "style": "edm_remix",
+            "preferred_tempo": 1.03,
+            "preferred_pitch": 1
+        }
+    },
+    "test_upload_settings": {
+        "privacy": "unlisted",
+        "title": "[TEST] Copyright Check - {song_name}",
+        "description": "Testing for copyright claims",
+        "auto_delete_after_check": true
+    }
+}

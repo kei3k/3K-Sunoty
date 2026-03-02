@@ -1,0 +1,7 @@
+{
+  "custom_prompt": "Transform this song into an energetic punk rock style, with fast tempo, distorted electric guitars, aggressive drumming, and raw, rebellious vocals, but keep the  female vocals, melody, and lyrics.",
+  "presets": {
+    "1.Punk/Rock": "Transform this song into an energetic punk rock style, with fast tempo, distorted electric guitars, aggressive drumming, and raw, rebellious vocals, but keep the original melody and lyrics.",
+    "1.Punk/Rock Female ": "Transform this song into an energetic punk rock style, with fast tempo, distorted electric guitars, aggressive drumming, and raw, rebellious vocals, but keep the  female vocals, melody, and lyrics."
+  }
+}
