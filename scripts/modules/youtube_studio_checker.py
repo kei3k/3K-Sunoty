@@ -123,113 +123,81 @@ class YouTubeStudioChecker:
                     time.sleep(5)
                     continue
                 
-                # === DETECTION LOGIC ===
-                # On the copyright page, YouTube shows either:
-                # - "No issues found" / "Không tìm thấy vấn đề nào" (clean)
-                # - A table of claims with details (has copyright)
+                # === DETECTION LOGIC (Using exact YouTube Studio selectors) ===
                 
-                # Method 1: Look for claim rows/elements
-                has_claims = False
-                claims_detail = []
+                # CLEAN indicator: this div appears when NO copyright issues found
+                # <div class="ytcrVideoContentListNoContentMessage">
+                #   Không tìm thấy nội dung có bản quyền trong video của bạn.
+                # </div>
+                no_copyright_elements = self.driver.find_elements(
+                    By.CSS_SELECTOR, "div.ytcrVideoContentListNoContentMessage"
+                )
                 
-                # Check for claim rows (ytcp-table-row or similar)
-                try:
-                    # YouTube Studio copyright page uses specific elements for claims
-                    claim_elements = self.driver.find_elements(By.CSS_SELECTOR, 
-                        "ytcp-copyright-issue-row, .copyright-issue-row, "
-                        "ytcp-copyright-claim-row, [class*='claim'], "
-                        "ytcp-table-body ytcp-table-row")
-                    
-                    if claim_elements:
-                        has_claims = True
-                        for elem in claim_elements[:5]:
-                            try:
-                                claim_text = elem.text.strip()
-                                if claim_text:
-                                    claims_detail.append(claim_text)
-                            except: pass
-                        print(f"[STUDIO] Found {len(claim_elements)} claim element(s)")
-                except: pass
+                if no_copyright_elements:
+                    msg_text = no_copyright_elements[0].text.strip()
+                    print(f"[STUDIO] ✅ CLEAN: Found 'no copyright' message: {msg_text}")
+                    return {
+                        "status": "success",
+                        "video_id": video_id,
+                        "has_copyright": False,
+                        "restriction_text": msg_text or "No copyright found"
+                    }
                 
-                # Method 2: Text-based detection
-                if not has_claims:
-                    # Check for "no issues" indicators
-                    no_issues_keywords = [
-                        'khong tim thay van de', 'no issues found', 'no copyright issues',
-                        'khong co van de', 'no issues'
-                    ]
-                    
-                    is_clean = any(kw in page_text for kw in no_issues_keywords)
-                    
-                    if is_clean:
-                        print(f"[STUDIO] ✅ No copyright issues for {video_id}")
-                        return {
-                            "status": "success",
-                            "video_id": video_id,
-                            "has_copyright": False,
-                            "restriction_text": "No issues found"
-                        }
-                    
-                    # Check for copyright claim keywords
-                    claim_keywords = [
-                        'ban quyen', 'copyright claim', 'content id', 
-                        'khieu nai', 'claim', 'matched third party',
-                        'noi dung phu hop', 'visual content', 'audio content',
-                        'blocked', 'da chan', 'bi chan',
-                        'han che o mot so quoc gia', 'restricted'
-                    ]
-                    
-                    for kw in claim_keywords:
-                        if kw in page_text:
-                            has_claims = True
-                            print(f"[STUDIO] Found copyright keyword: '{kw}'")
-                            break
+                # COPYRIGHT indicator: claim rows have touch feedback shapes
+                # <div class="yt-spec-touch-feedback-shape__fill"></div>
+                # These appear inside clickable claim rows
+                claim_feedback = self.driver.find_elements(
+                    By.CSS_SELECTOR, "div.yt-spec-touch-feedback-shape__fill"
+                )
                 
-                # Method 3: Check for the "issues" count badge
-                if not has_claims:
+                if claim_feedback:
+                    print(f"[STUDIO] ⚠️ COPYRIGHT: Found {len(claim_feedback)} claim elements")
+                    
+                    # Try to get claim details from the page
+                    claims_detail = []
                     try:
-                        # Look for issue count indicators
-                        issue_badges = self.driver.find_elements(By.CSS_SELECTOR, 
-                            "[class*='issue-count'], [class*='copyright-status'], "
-                            ".issue-indicator, ytcp-badge")
-                        for badge in issue_badges:
-                            badge_text = badge.text.strip()
-                            if badge_text and badge_text not in ['0', '']:
-                                try:
-                                    count = int(badge_text)
-                                    if count > 0:
-                                        has_claims = True
-                                        print(f"[STUDIO] Issue badge count: {count}")
-                                except: pass
+                        body_text = self.driver.find_element(By.TAG_NAME, "body").text
+                        claims_detail = [body_text[:500]]
                     except: pass
-                
-                # Return result
-                if has_claims:
-                    print(f"[STUDIO] ⚠️ COPYRIGHT CLAIMS FOUND for {video_id}")
+                    
                     return {
                         "status": "success",
                         "video_id": video_id,
                         "has_copyright": True,
                         "claims": claims_detail,
-                        "restriction_text": "Copyright claims found"
+                        "restriction_text": f"Copyright claims found ({len(claim_feedback)} items)"
                     }
-                else:
-                    # If we couldn't determine either way, check if page loaded properly
-                    if len(page_text) < 50:
-                        print(f"[STUDIO] Page seems empty, retrying...")
-                        time.sleep(10)
-                        self.driver.refresh()
-                        time.sleep(5)
-                        continue
-                    
-                    # Default: if no clear signal, report as clean but flag uncertainty
-                    print(f"[STUDIO] No clear copyright signals for {video_id} (may need more processing time)")
+                
+                # Neither indicator found — page may not have loaded yet
+                if len(page_text) < 100:
+                    print(f"[STUDIO] Page seems empty, retrying...")
+                    time.sleep(10)
+                    self.driver.refresh()
+                    time.sleep(5)
+                    continue
+                
+                # Fallback: if page loaded but no clear signal, check text
+                page_text_norm = self._normalize_text(
+                    self.driver.find_element(By.TAG_NAME, "body").text
+                )
+                if 'khong tim thay noi dung co ban quyen' in page_text_norm:
+                    print(f"[STUDIO] ✅ CLEAN (text fallback)")
                     return {
                         "status": "success",
                         "video_id": video_id,
                         "has_copyright": False,
-                        "restriction_text": "No clear copyright signals"
+                        "restriction_text": "No copyright (text match)"
                     }
+                
+                # If we still can't determine, assume uncertain
+                print(f"[STUDIO] ❓ Cannot determine copyright status for {video_id}")
+                print(f"[STUDIO] Page text preview: {page_text[:200]}")
+                return {
+                    "status": "success",
+                    "video_id": video_id,
+                    "has_copyright": False,
+                    "restriction_text": "Could not determine (check manually)"
+                }
                     
         except Exception as e:
             logger.error(f"Copyright page check failed: {e}")
