@@ -15,3 +15,4 @@ scipy>=1.7.0             # Required for librosa
 selenium>=4.15.0         # Browser automation
 webdriver-manager>=4.0.0 # WebDriver management
 yt-dlp>=2023.11.0        # Audio/video downloading
+google-generativeai>=0.3.0  # Gemini API for lyrics search

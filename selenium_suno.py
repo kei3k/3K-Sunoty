@@ -21,6 +21,95 @@ import os
 
 logger = logging.getLogger(__name__)
 
+def search_lyrics_gemini(song_title, log_func=None):
+    """Search for song lyrics using Gemini API Flash model.
+    
+    Args:
+        song_title: Name of the song to search lyrics for
+        log_func: Optional logging callback
+    
+    Returns:
+        str: Lyrics text or empty string if not found
+    """
+    def log(msg):
+        if log_func:
+            log_func(f"  {msg}\n")
+        logger.info(msg)
+    
+    try:
+        from google import genai
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        api_key = os.getenv('GEMINI_API_KEY', '').strip()
+        if not api_key:
+            log("⚠️ GEMINI_API_KEY not set in .env, skipping lyrics")
+            return ""
+        
+        client = genai.Client(api_key=api_key)
+        
+        # Clean up song title for better search
+        clean_title = song_title.replace('_', ' ').replace('-', ' - ')
+        import re
+        clean_title = re.sub(r'[A-Za-z0-9_-]{11}$', '', clean_title).strip()
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip(' -_')
+        
+        prompt = f"""Find the complete original lyrics for the song \"{clean_title}\".
+
+Rules:
+- Return ONLY the lyrics text, nothing else
+- Include section markers like [Verse 1], [Chorus], [Bridge] etc.
+- Do NOT include any explanation, commentary, or notes
+- If you cannot find the lyrics, return exactly: LYRICS_NOT_FOUND
+- Keep the original language of the song"""
+        
+        log(f"🔍 Searching lyrics for: {clean_title}")
+        
+        # Retry up to 3 times for rate limit errors
+        for retry in range(3):
+            try:
+                from google.genai import types
+                
+                # Use Google Search grounding for accurate lyrics
+                response = client.models.generate_content(
+                    model='gemini-2.0-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                    )
+                )
+                lyrics = response.text.strip()
+                
+                if 'LYRICS_NOT_FOUND' in lyrics or len(lyrics) < 20:
+                    log(f"⚠️ Lyrics not found for: {clean_title}")
+                    return ""
+                
+                if len(lyrics) > 3000:
+                    lyrics = lyrics[:3000]
+                    log(f"✂️ Lyrics truncated to 3000 chars")
+                
+                log(f"✅ Found lyrics ({len(lyrics)} chars)")
+                return lyrics
+                
+            except Exception as e:
+                if '429' in str(e) or 'Resource exhausted' in str(e):
+                    wait_time = (retry + 1) * 10  # 10s, 20s, 30s
+                    log(f"⏳ Rate limited, waiting {wait_time}s (retry {retry+1}/3)...")
+                    time.sleep(wait_time)
+                else:
+                    raise
+        
+        log("⚠️ Gemini rate limit exceeded after 3 retries")
+        return ""
+        
+    except ImportError:
+        log("⚠️ google-genai not installed, skipping lyrics")
+        return ""
+    except Exception as e:
+        log(f"⚠️ Lyrics search failed: {str(e)[:80]}")
+        return ""
+
+
 class SunoBrowserAutomation:
     def __init__(self, headless=False, user_data_dir=None):
         """
@@ -853,23 +942,23 @@ class SunoBrowserAutomation:
                 time.sleep(3)
                 log("✅ On Create page")
                 
-                # Step 2: Enter Prompt
-                log("[STEP 2/8] Entering Prompt...")
+                # Step 2: Enter style prompt
+                log("[STEP 2/8] Entering style prompt...")
+                
+                # Find style textarea: below the "Styles" label div
                 try:
-                    prompt_xpath = '//*[@id="main-container"]/div/div/div/div/div/div[3]/div/div[2]/div[3]/div/div/div[2]/div/div[1]/div[1]/div/textarea'
-                    prompt_area = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH, prompt_xpath))
-                    )
-                    prompt_area.clear()
-                    prompt_area.send_keys(prompt if prompt else "Cover of uploaded song")
-                    log("✅ Entered prompt")
+                    style_textarea = self.driver.find_element(By.XPATH, 
+                        "//div[contains(text(), 'Styles')]/following::textarea[1]")
+                    style_textarea.click()
+                    time.sleep(0.5)
+                    style_textarea.clear()
+                    style_textarea.send_keys(prompt if prompt else "Cover")
+                    log("✅ Style prompt entered")
                 except Exception as e:
-                    log(f"⚠️ Prompt entry issue: {str(e)[:50]}")
-                    # Try fallback
+                    log(f"⚠️ Style textarea issue: {str(e)[:50]}")
                     try:
-                        fallback_xpath = "//textarea[contains(@class, 'resize-none')]"
-                        prompt_area = self.driver.find_element(By.XPATH, fallback_xpath)
-                        prompt_area.send_keys(prompt if prompt else "Cover")
+                        fallback = self.driver.find_element(By.XPATH, "//textarea[contains(@class, 'resize-none')]")
+                        fallback.send_keys(prompt if prompt else "Cover")
                         log("✅ Entered prompt (fallback)")
                     except:
                         log("⚠️ Prompt fallback also failed")
@@ -1175,10 +1264,24 @@ class SunoBrowserAutomation:
                         
                         # Check for canvas element (upload success indicator - waveform visualization)
                         # This is the DEFINITIVE success signal
+                        # Method 1: Specific XPath
                         canvas_elements = self.driver.find_elements(By.XPATH, success_xpath)
                         if canvas_elements and any(el.is_displayed() for el in canvas_elements):
                             log("✅ Upload success! Canvas/waveform appeared")
                             upload_success = True
+                            break
+                        
+                        # Method 2: Any canvas element on page (waveform)
+                        all_canvas = self.driver.find_elements(By.TAG_NAME, "canvas")
+                        for c in all_canvas:
+                            try:
+                                if c.is_displayed() and c.size.get('width', 0) > 100:
+                                    log("✅ Upload success! Canvas detected (fallback)")
+                                    upload_success = True
+                                    break
+                            except:
+                                pass
+                        if upload_success:
                             break
                             
                         if wait_attempt % 6 == 0:  # Log every 30s
@@ -1202,7 +1305,33 @@ class SunoBrowserAutomation:
                     log("⚠️ Upload signal timeout - proceeding anyway")
                 time.sleep(2)
 
-                # Click Create
+                # After upload: Suno auto-detects lyrics but they may be wrong
+                # Overwrite with correct lyrics from Gemini
+                log("[STEP 8/8] Searching correct lyrics via Gemini...")
+                try:
+                    lyrics = search_lyrics_gemini(title, log_func=log_callback)
+                    if lyrics:
+                        oh_suffix = "\n\nOh...oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh..oh"
+                        lyrics = lyrics + oh_suffix
+                        try:
+                            lyrics_ta = self.driver.find_element(By.XPATH, "//textarea[contains(@placeholder, 'lyrics')]")
+                            lyrics_ta.click()
+                            time.sleep(0.5)
+                            # Clear existing (Suno auto-detected) lyrics and overwrite
+                            self.driver.execute_script(
+                                "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+                                lyrics_ta, lyrics
+                            )
+                            log(f"✅ Lyrics overwritten with Gemini result ({len(lyrics)} chars)")
+                            time.sleep(1)
+                        except Exception as e:
+                            log(f"⚠️ Could not overwrite lyrics: {str(e)[:50]}")
+                    else:
+                        log("ℹ️ Gemini lyrics not found, keeping Suno auto-detected lyrics")
+                except Exception as e:
+                    log(f"⚠️ Lyrics search error: {str(e)[:50]}")
+
+
                 log("[FINAL] Clicking Create Button...")
                 try:
                     create_xpath = "/html/body/div[1]/div[1]/div[2]/div[1]/div/div/div/div/div/div/div/div[3]/div/div[3]/button[2]/span"
