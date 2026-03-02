@@ -1,8 +1,8 @@
 """
 YouTube Studio Copyright Checker using Selenium.
 
-Scrapes YouTube Studio directly to check for Content ID claims and copyright status.
-Uses existing browser profile with saved cookies (same as Suno).
+Checks each video's dedicated copyright page for accurate results.
+Uses existing browser profile with saved cookies.
 """
 
 from selenium import webdriver
@@ -27,9 +27,6 @@ class YouTubeStudioChecker:
     STUDIO_URL = "https://studio.youtube.com"
     
     def __init__(self, user_data_dir=None, headless=False):
-        """
-        Initialize checker with browser profile.
-        """
         if not user_data_dir:
             current_script_dir = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.dirname(os.path.dirname(current_script_dir))
@@ -88,18 +85,168 @@ class YouTubeStudioChecker:
         nfkd_form = unicodedata.normalize('NFKD', text)
         return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).lower().strip()
 
-    def check_copyright_by_video_id(self, video_id: str, max_retries: int = 15) -> dict:
+    def check_copyright_by_video_id(self, video_id: str, max_retries: int = 5) -> dict:
         """
-        NEW STRATEGY: Instead of the fragile Edit page, we use the Search feature 
-        on the Content page to isolate the video row. 
-        This is much more stable and matches our successful 'scan' logs.
+        Check copyright by navigating directly to the video's Copyright tab.
+        URL: studio.youtube.com/video/{video_id}/copyright
+        
+        This is MUCH more reliable than scanning the content list.
         """
         try:
-            if not self._navigate_to_studio():
-                return {"status": "error", "message": "Cannot access YouTube Studio"}
+            self._init_browser()
             
-            # 1. Navigate to Content page (Wait for redirect if needed)
+            copyright_url = f"{self.STUDIO_URL}/video/{video_id}/copyright"
+            print(f"[STUDIO] Navigating to copyright page: {copyright_url}")
+            self.driver.get(copyright_url)
+            time.sleep(5)
+            
+            for attempt in range(max_retries):
+                page_source = self.driver.page_source
+                page_text = self._normalize_text(self.driver.find_element(By.TAG_NAME, "body").text)
+                
+                # Debug: save page text
+                try:
+                    with open("debug_copyright_page.log", "a", encoding="utf-8") as f:
+                        f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} | Video: {video_id} | Attempt: {attempt+1} ---\n")
+                        body_text = self.driver.find_element(By.TAG_NAME, "body").text
+                        f.write(body_text[:3000] + "\n")
+                except: pass
+                
+                # Check if still processing
+                processing_keywords = ['dang kiem tra', 'checking', 'processing', 'dang xu ly']
+                is_processing = any(kw in page_text for kw in processing_keywords)
+                
+                if is_processing and attempt < max_retries - 1:
+                    print(f"[STUDIO] Video still processing... retry {attempt+1}/{max_retries}")
+                    time.sleep(30)
+                    self.driver.refresh()
+                    time.sleep(5)
+                    continue
+                
+                # === DETECTION LOGIC ===
+                # On the copyright page, YouTube shows either:
+                # - "No issues found" / "Không tìm thấy vấn đề nào" (clean)
+                # - A table of claims with details (has copyright)
+                
+                # Method 1: Look for claim rows/elements
+                has_claims = False
+                claims_detail = []
+                
+                # Check for claim rows (ytcp-table-row or similar)
+                try:
+                    # YouTube Studio copyright page uses specific elements for claims
+                    claim_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                        "ytcp-copyright-issue-row, .copyright-issue-row, "
+                        "ytcp-copyright-claim-row, [class*='claim'], "
+                        "ytcp-table-body ytcp-table-row")
+                    
+                    if claim_elements:
+                        has_claims = True
+                        for elem in claim_elements[:5]:
+                            try:
+                                claim_text = elem.text.strip()
+                                if claim_text:
+                                    claims_detail.append(claim_text)
+                            except: pass
+                        print(f"[STUDIO] Found {len(claim_elements)} claim element(s)")
+                except: pass
+                
+                # Method 2: Text-based detection
+                if not has_claims:
+                    # Check for "no issues" indicators
+                    no_issues_keywords = [
+                        'khong tim thay van de', 'no issues found', 'no copyright issues',
+                        'khong co van de', 'no issues'
+                    ]
+                    
+                    is_clean = any(kw in page_text for kw in no_issues_keywords)
+                    
+                    if is_clean:
+                        print(f"[STUDIO] ✅ No copyright issues for {video_id}")
+                        return {
+                            "status": "success",
+                            "video_id": video_id,
+                            "has_copyright": False,
+                            "restriction_text": "No issues found"
+                        }
+                    
+                    # Check for copyright claim keywords
+                    claim_keywords = [
+                        'ban quyen', 'copyright claim', 'content id', 
+                        'khieu nai', 'claim', 'matched third party',
+                        'noi dung phu hop', 'visual content', 'audio content',
+                        'blocked', 'da chan', 'bi chan',
+                        'han che o mot so quoc gia', 'restricted'
+                    ]
+                    
+                    for kw in claim_keywords:
+                        if kw in page_text:
+                            has_claims = True
+                            print(f"[STUDIO] Found copyright keyword: '{kw}'")
+                            break
+                
+                # Method 3: Check for the "issues" count badge
+                if not has_claims:
+                    try:
+                        # Look for issue count indicators
+                        issue_badges = self.driver.find_elements(By.CSS_SELECTOR, 
+                            "[class*='issue-count'], [class*='copyright-status'], "
+                            ".issue-indicator, ytcp-badge")
+                        for badge in issue_badges:
+                            badge_text = badge.text.strip()
+                            if badge_text and badge_text not in ['0', '']:
+                                try:
+                                    count = int(badge_text)
+                                    if count > 0:
+                                        has_claims = True
+                                        print(f"[STUDIO] Issue badge count: {count}")
+                                except: pass
+                    except: pass
+                
+                # Return result
+                if has_claims:
+                    print(f"[STUDIO] ⚠️ COPYRIGHT CLAIMS FOUND for {video_id}")
+                    return {
+                        "status": "success",
+                        "video_id": video_id,
+                        "has_copyright": True,
+                        "claims": claims_detail,
+                        "restriction_text": "Copyright claims found"
+                    }
+                else:
+                    # If we couldn't determine either way, check if page loaded properly
+                    if len(page_text) < 50:
+                        print(f"[STUDIO] Page seems empty, retrying...")
+                        time.sleep(10)
+                        self.driver.refresh()
+                        time.sleep(5)
+                        continue
+                    
+                    # Default: if no clear signal, report as clean but flag uncertainty
+                    print(f"[STUDIO] No clear copyright signals for {video_id} (may need more processing time)")
+                    return {
+                        "status": "success",
+                        "video_id": video_id,
+                        "has_copyright": False,
+                        "restriction_text": "No clear copyright signals"
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Copyright page check failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e), "video_id": video_id}
+
+    def check_recent_videos(self, limit: int = 20) -> list:
+        """Scan content list for recent videos and check each one's copyright page."""
+        results = []
+        try:
+            if not self._navigate_to_studio():
+                return results
+            
             time.sleep(2)
+            
+            # Navigate to content page
             current_url = self.driver.current_url
             if "/channel/" in current_url:
                 channel_base = current_url.split("/channel/")[0] + "/channel/" + current_url.split("/channel/")[1].split("/")[0]
@@ -108,159 +255,65 @@ class YouTubeStudioChecker:
                 content_url = f"{self.STUDIO_URL}/videos/upload"
             
             self.driver.get(content_url)
-            time.sleep(4)
-
-            # 2. Search for the video ID to isolate the row
-            try:
-                search_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "#search-icon, ytcp-icon-button[id='search-icon']"))
-                )
-                search_btn.click()
-                time.sleep(1)
-                
-                search_input = self.driver.find_element(By.CSS_SELECTOR, "input#search-input, input[type='text']")
-                search_input.clear()
-                search_input.send_keys(video_id)
-                search_input.send_keys(Keys.RETURN)
-                time.sleep(3)
-            except Exception as e:
-                logger.warning(f"Search UI failed, attempting direct scan: {e}")
-
-            # 3. Polling for final result
-            for attempt in range(max_retries):
-                # Look for video rows
-                rows = self.driver.find_elements(By.CSS_SELECTOR, "ytcp-video-row")
-                
-                if not rows:
-                    if attempt < 3: # Give it some time to load search results
-                        time.sleep(3)
-                        continue
-                    return {"status": "not_found", "message": f"Video {video_id} not found in list", "has_copyright": None}
-                
-                # Check first row (should be our video)
-                row = rows[0]
-                
-                # Scroll into view
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", row)
-                time.sleep(1)
-                
-                # Get text
-                raw_row_text = self.driver.execute_script("return arguments[0].innerText;", row)
-                row_text = self._normalize_text(raw_row_text)
-                
-                # DEBUG Log
-                with open("debug_copyright_text.log", "a", encoding="utf-8") as f:
-                    f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} (Search ID: {video_id}) ---\n")
-                    f.write(f"Row Text: {raw_row_text}\n\n")
-
-                # Keywords
-                checking_keywords = ['checking', 'dang kiem tra', 'dang xu ly', 'processing', 'cho xu ly', 'qua trinh xu ly']
-                copyright_keywords = ['ban quyen', 'copyright', 'blocked', 'chan', 'da chan', 'claim', 'khieu nai', 'han che']
-                # Exact values that indicate "safe" (no restrictions)
-                safe_exact_values = ['khong co', 'none', 'no issues']
-
-                is_checking = any(kw in row_text for kw in checking_keywords)
-                
-                if is_checking and attempt < max_retries - 1:
-                    logger.info(f"Video {video_id} still processing... retry {attempt+1}")
-                    time.sleep(15)
-                    self.driver.refresh()
-                    time.sleep(5)
-                    continue
-
-                # Not checking, let's look for claims
-                # Strategy: Check the #restrictions-text element directly for the exact value
-                has_copyright = False
-                res_text = "Unknown"
-                
-                try:
-                    res_div = row.find_element(By.CSS_SELECTOR, "#restrictions-text")
-                    res_text = res_div.text.strip()
-                    norm_res = self._normalize_text(res_text)
-                    
-                    # Check for EXACT match of safe values (not substring)
-                    # "khong co" = "none" (safe), but "khong cong khai" = "unlisted" (different)
-                    if norm_res in safe_exact_values:
-                        has_copyright = False
-                    elif norm_res and any(kw in norm_res for kw in copyright_keywords):
-                        has_copyright = True
-                    elif norm_res and norm_res not in safe_exact_values:
-                        # If there's text but it's not explicitly safe, assume claim
-                        has_copyright = True
-                except:
-                    # Fallback to full row text - look for copyright keywords
-                    # Be conservative: if we see copyright keywords, it's a claim
-                    has_copyright = any(kw in row_text for kw in copyright_keywords)
-                
-                return {
-                    "status": "success",
-                    "video_id": video_id,
-                    "has_copyright": has_copyright,
-                    "is_checking": is_checking,
-                    "restriction_text": res_text
-                }
-                
-        except Exception as e:
-            logger.error(f"ID check failed: {e}")
-            return {"status": "error", "message": str(e), "video_id": video_id}
-
-    def check_recent_videos(self, limit: int = 20) -> list:
-        """Original list scan method (kept for compatibility)"""
-        results = []
-        try:
-            if not self._navigate_to_studio(): return results
-            time.sleep(2)
-            self.driver.get(f"{self.driver.current_url.split('/channel/')[0]}/channel/{self.driver.current_url.split('/channel/')[1].split('/')[0]}/videos/upload")
             time.sleep(5)
+            
+            # Find video rows
             rows = self.driver.find_elements(By.CSS_SELECTOR, "ytcp-video-row")
+            print(f"[STUDIO] Found {len(rows)} video rows on content page")
+            
+            video_ids = []
+            video_titles = []
+            
             for row in rows[:limit]:
                 try:
-                    title = row.find_element(By.CSS_SELECTOR, "#video-title").text
-                    status = self._extract_copyright_from_row(row, title)
-                    if status: results.append(status)
-                except: continue
+                    # Get video title
+                    title_elem = row.find_element(By.CSS_SELECTOR, "#video-title")
+                    title = title_elem.text.strip()
+                    
+                    # Get video link to extract ID
+                    try:
+                        link = row.find_element(By.CSS_SELECTOR, "a[href*='/video/']")
+                        href = link.get_attribute("href")
+                        if "/video/" in href:
+                            vid_id = href.split("/video/")[1].split("/")[0]
+                            video_ids.append(vid_id)
+                            video_titles.append(title)
+                    except:
+                        # Try alternate extraction
+                        row_html = row.get_attribute("innerHTML")
+                        import re
+                        match = re.search(r'/video/([a-zA-Z0-9_-]{11})', row_html)
+                        if match:
+                            video_ids.append(match.group(1))
+                            video_titles.append(title)
+                except:
+                    continue
+            
+            print(f"[STUDIO] Extracted {len(video_ids)} video IDs to check")
+            
+            # Now check each video's copyright page individually
+            for i, (vid_id, title) in enumerate(zip(video_ids, video_titles)):
+                print(f"[STUDIO] Checking [{i+1}/{len(video_ids)}] {title[:50]}...")
+                
+                result = self.check_copyright_by_video_id(vid_id, max_retries=2)
+                
+                results.append({
+                    "video_title": title,
+                    "video_id": vid_id,
+                    "has_copyright": result.get("has_copyright", False),
+                    "restriction_text": result.get("restriction_text", "Unknown")
+                })
+                
+                time.sleep(2)  # Brief pause between checks
+            
             return results
-        except: return results
+            
+        except Exception as e:
+            logger.error(f"Recent videos scan failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return results
 
-    def _extract_copyright_from_row(self, row, title: str) -> dict:
-        """Helper for batch scan"""
-        raw_text = self.driver.execute_script("return arguments[0].innerText;", row)
-        norm_text = self._normalize_text(raw_text)
-        
-        # Try to find the restrictions column specifically
-        res_text = ""
-        try:
-            res_div = row.find_element(By.CSS_SELECTOR, "#restrictions-text, .restrictions-text, [id*='restrictions']")
-            res_text = self._normalize_text(res_div.text.strip())
-        except:
-            # Fallback: look for line-by-line in row text
-            # The restrictions value is typically on its own line
-            lines = [self._normalize_text(line) for line in raw_text.split('\n') if line.strip()]
-            for line in lines:
-                # Check if this line is ONLY a restriction status (not mixed with other text)
-                if line in ['khong co', 'ban quyen', 'han che', 'none', 'copyright']:
-                    res_text = line
-                    break
-        
-        # Check the restrictions text specifically, not the whole row
-        # "khong co" means "none" (no restrictions) - but ONLY if it's the exact restriction value
-        # "khong cong khai" means "unlisted" (privacy setting) - should NOT trigger safe
-        if res_text:
-            safe = res_text in ['khong co', 'none', 'no issues']
-            has_cp = res_text in ['ban quyen', 'copyright', 'han che', 'claim', 'blocked']
-        else:
-            # Fallback: use full text but be more careful
-            # Check for copyright keywords first
-            has_cp = any(kw in norm_text for kw in ['ban quyen', 'copyright', 'claim', 'han che'])
-            # Only mark safe if "khong co" appears AND NOT as part of "khong cong khai"
-            # Use regex or check for exact phrase on newline
-            import re
-            safe = bool(re.search(r'\bkhong co\b', norm_text)) and 'khong cong khai' not in norm_text
-            # If both, copyright wins (more conservative)
-            if has_cp:
-                safe = False
-        
-        return {"video_title": title, "has_copyright": has_cp, "restriction_text": raw_text}
 
 # Singleton
 studio_checker = YouTubeStudioChecker()

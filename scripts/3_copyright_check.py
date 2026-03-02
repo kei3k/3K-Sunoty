@@ -62,31 +62,37 @@ def run_action(mode: str, input_path: str, channel_id: str, video_id: str = None
             return {"status": "error", "message": f"File not found: {input_path}"}
             
         ext = os.path.splitext(input_path)[1].lower()
+        is_video = ext in ['.mp4', '.avi', '.mkv', '.mov', '.webm']
         is_audio = ext in ['.mp3', '.wav', '.aac', '.flac', '.m4a']
         video_path = input_path
         temp_files_to_cleanup = []
         
         try:
             if is_audio:
+                # Audio needs conversion to video for YouTube upload
                 print("[INFO] Input is audio. Converting to temporary video...")
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                video_path = os.path.join(os.path.dirname(input_path), f"temp_check_{timestamp}.mp4")
-                conversion_result = video_converter.convert_for_youtube(
-                    audio_file=input_path, output_video=video_path, visualization='simple'
-                )
-                if conversion_result.get('status') != 'success':
-                    raise Exception(f"Video conversion failed: {conversion_result.get('error')}")
-                temp_files_to_cleanup.append(video_path)
+                try:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    video_path = os.path.join(os.path.dirname(input_path), f"temp_check_{timestamp}.mp4")
+                    conversion_result = video_converter.convert_for_youtube(
+                        audio_file=input_path, output_video=video_path, visualization='simple'
+                    )
+                    if conversion_result.get('status') != 'success':
+                        raise Exception(f"Video conversion failed: {conversion_result.get('error')}")
+                    temp_files_to_cleanup.append(video_path)
+                except Exception as conv_err:
+                    return {"status": "error", "message": f"Audio→Video conversion failed: {conv_err}. Try using an MP4 file instead."}
+            elif is_video:
+                print(f"[INFO] Input is video ({ext}), uploading directly...")
+            else:
+                return {"status": "error", "message": f"Unsupported file type: {ext}. Use MP4 or MP3."}
             
             song_name = os.path.splitext(os.path.basename(input_path))[0]
+            title = song_name[:95] if len(song_name) > 95 else song_name
             
-            # Use simple title = just the song name (no prefix, for easier matching)
-            # Truncate to 95 chars (Youtube limit is 100)
-            title = song_name
-            if len(title) > 95:
-                title = title[:92] + "..."
+            print(f"[INFO] Uploading '{title}' (Account: {profile_name})...")
+            print(f"[INFO] File: {video_path}")
             
-            print(f"[INFO] Uploading {song_name} (Account: {profile_name})...")
             upload_result = youtube_checker.upload_test_video(
                 audio_file=input_path if is_audio else None,
                 video_file=video_path,
@@ -100,6 +106,7 @@ def run_action(mode: str, input_path: str, channel_id: str, video_id: str = None
                 return {'status': 'success', 'video_id': video_id, 'song_name': song_name}
                 
         except Exception as e:
+            print(f"[ERROR] Upload failed: {e}")
             return {"status": "error", "message": str(e)}
         finally:
             if temp_files_to_cleanup:
