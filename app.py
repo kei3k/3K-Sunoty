@@ -213,6 +213,8 @@ class SunoApp(ctk.CTk):
                        hover_color="#16a34a", command=self.save_preset_dialog).pack(side="left", padx=2)
         ctk.CTkButton(preset_row, text="❌ Delete", width=80, fg_color=COLORS['error'],
                        hover_color="#dc2626", command=self.delete_preset).pack(side="left", padx=2)
+        ctk.CTkButton(preset_row, text="✏️ Manage", width=90, fg_color=COLORS['blue'],
+                       hover_color="#2563eb", command=self.open_preset_manager).pack(side="left", padx=2)
         
         # Run button
         ctk.CTkButton(frame, text="🚀 RUN REMIX", height=45, font=ctk.CTkFont(size=14, weight="bold"),
@@ -1132,6 +1134,140 @@ class SunoApp(ctk.CTk):
                 self.save_settings()
                 self.update_preset_combo()
                 self.entry_prompt.delete(0, "end")
+    
+    def open_preset_manager(self):
+        """Open a full preset manager dialog."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("✏️ Preset Manager")
+        dialog.geometry("700x500")
+        dialog.configure(fg_color=COLORS['bg_dark'])
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.after(100, dialog.lift)
+        
+        # Header
+        ctk.CTkLabel(dialog, text="✏️ Preset Manager", font=ctk.CTkFont(size=18, weight="bold")).pack(
+            anchor="w", padx=20, pady=(15, 5))
+        ctk.CTkLabel(dialog, text="Add, edit, or delete prompt presets",
+                      text_color=COLORS['text_dim']).pack(anchor="w", padx=20, pady=(0, 10))
+        
+        # Main content
+        content = ctk.CTkFrame(dialog, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        
+        # Left: Preset list
+        left = ctk.CTkFrame(content, fg_color=COLORS['bg_card'], corner_radius=10, width=200)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        left.pack_propagate(False)
+        
+        ctk.CTkLabel(left, text="Presets", font=ctk.CTkFont(weight="bold")).pack(padx=10, pady=(10, 5))
+        
+        list_frame = ctk.CTkScrollableFrame(left, fg_color="transparent")
+        list_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Right: Editor
+        right = ctk.CTkFrame(content, fg_color=COLORS['bg_card'], corner_radius=10)
+        right.pack(side="left", fill="both", expand=True)
+        
+        ctk.CTkLabel(right, text="Preset Name:", font=ctk.CTkFont(weight="bold")).pack(
+            anchor="w", padx=15, pady=(15, 3))
+        name_entry = ctk.CTkEntry(right, placeholder_text="Preset name...")
+        name_entry.pack(fill="x", padx=15, pady=(0, 10))
+        
+        ctk.CTkLabel(right, text="Prompt Content:", font=ctk.CTkFont(weight="bold")).pack(
+            anchor="w", padx=15, pady=(5, 3))
+        prompt_textbox = ctk.CTkTextbox(right, fg_color=COLORS['bg_dark'], height=200,
+                                          font=ctk.CTkFont(size=13))
+        prompt_textbox.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        
+        # State
+        selected_preset = [None]  # mutable container
+        preset_buttons = []
+        
+        def select_preset(name):
+            selected_preset[0] = name
+            name_entry.delete(0, "end")
+            name_entry.insert(0, name)
+            prompt_textbox.delete("1.0", "end")
+            prompt_textbox.insert("1.0", self.presets.get(name, ""))
+            # Highlight selected button
+            for btn, btn_name in preset_buttons:
+                if btn_name == name:
+                    btn.configure(fg_color=COLORS['accent'])
+                else:
+                    btn.configure(fg_color=COLORS['bg_hover'])
+        
+        def refresh_list():
+            for widget in list_frame.winfo_children():
+                widget.destroy()
+            preset_buttons.clear()
+            for pname in self.presets:
+                btn = ctk.CTkButton(list_frame, text=pname, anchor="w",
+                                     fg_color=COLORS['bg_hover'], hover_color=COLORS['border'],
+                                     height=32, command=lambda n=pname: select_preset(n))
+                btn.pack(fill="x", pady=1)
+                preset_buttons.append((btn, pname))
+        
+        def save_current():
+            new_name = name_entry.get().strip()
+            new_prompt = prompt_textbox.get("1.0", "end").strip()
+            if not new_name:
+                messagebox.showwarning("Warning", "Preset name is empty!", parent=dialog)
+                return
+            if not new_prompt:
+                messagebox.showwarning("Warning", "Prompt content is empty!", parent=dialog)
+                return
+            
+            old_name = selected_preset[0]
+            # If renaming (old name exists and differs from new name)
+            if old_name and old_name != new_name and old_name in self.presets:
+                del self.presets[old_name]
+            
+            self.presets[new_name] = new_prompt
+            self.save_settings()
+            self.update_preset_combo()
+            selected_preset[0] = new_name
+            refresh_list()
+            select_preset(new_name)
+            messagebox.showinfo("Saved", f"Preset '{new_name}' saved!", parent=dialog)
+        
+        def add_new():
+            selected_preset[0] = None
+            name_entry.delete(0, "end")
+            prompt_textbox.delete("1.0", "end")
+            name_entry.focus()
+            for btn, _ in preset_buttons:
+                btn.configure(fg_color=COLORS['bg_hover'])
+        
+        def delete_current():
+            name = selected_preset[0]
+            if name and name in self.presets:
+                if messagebox.askyesno("Confirm", f"Delete '{name}'?", parent=dialog):
+                    del self.presets[name]
+                    self.save_settings()
+                    self.update_preset_combo()
+                    selected_preset[0] = None
+                    name_entry.delete(0, "end")
+                    prompt_textbox.delete("1.0", "end")
+                    refresh_list()
+        
+        # Editor buttons
+        btn_row = ctk.CTkFrame(right, fg_color="transparent")
+        btn_row.pack(fill="x", padx=15, pady=(0, 15))
+        
+        ctk.CTkButton(btn_row, text="💾 Save", width=90, fg_color=COLORS['success'],
+                       hover_color="#16a34a", command=save_current).pack(side="left", padx=2)
+        ctk.CTkButton(btn_row, text="➕ New", width=80, fg_color=COLORS['accent'],
+                       hover_color=COLORS['accent_hover'], command=add_new).pack(side="left", padx=2)
+        ctk.CTkButton(btn_row, text="🗑️ Delete", width=90, fg_color=COLORS['error'],
+                       hover_color="#dc2626", command=delete_current).pack(side="left", padx=2)
+        
+        refresh_list()
+        
+        # Select first preset if exists
+        if self.presets:
+            first = list(self.presets.keys())[0]
+            select_preset(first)
 
 
 if __name__ == "__main__":
